@@ -7,7 +7,7 @@ from fastapi import Depends, status, HTTPException
 
 # Database
 from database import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import models
 
@@ -70,9 +70,9 @@ def credentials_exception() -> HTTPException:
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
-    db: Annotated[Session, Depends(get_db)]
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)], # oauth2_scheme pulls token string out of Auhtorization header
+    db: Annotated[AsyncSession, Depends(get_db)]
     ) -> models.User:
 
     # verify access token
@@ -91,7 +91,7 @@ def get_current_user(
         raise credentials_exception()
 
     # soft-deleted users are excluded: their tokens stay signed and unexpired after deletion
-    result = db.execute(
+    result = await db.execute(
         select(models.User)
         .where(models.User.user_id == user_id_int)
         .where(models.User.deleted_at.is_(None)),
@@ -106,7 +106,7 @@ CurrentUser = Annotated[models.User, Depends(get_current_user)]
 
 
 # builds on get_current_user, so an admin still needs a valid, unexpired token for a non-deleted user
-def get_current_admin(user: CurrentUser) -> models.User:
+async def get_current_admin(user: CurrentUser) -> models.User:
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

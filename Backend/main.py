@@ -1,7 +1,8 @@
 # Fastapi
-from fastapi import FastAPI, status, Request
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 
 # Database
 from database import engine, Base
@@ -13,10 +14,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from routers import admins, cart, orders, products, users
 
-# Table creation in database
-Base.metadata.create_all(bind=engine)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup: table creation in database (create_all is sync, run_sync runs it on the async connection)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    # Shutdown
+    await engine.dispose()
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # CORS configuration
 origins = [
@@ -41,19 +48,10 @@ app.include_router(admins.router, prefix="/api/admin", tags=["admin"])
 
 # Handle General HTTP Errors
 @app.exception_handler(StarletteHTTPException)
-def handle_general_http_errors(request: Request, exception: StarletteHTTPException):
-
-    message = {"detail": exception.detail}
-
-    return JSONResponse(
-        content=message,
-        status_code=exception.status_code
-    )
+async def handle_general_http_errors(request: Request, exception: StarletteHTTPException):
+    return await http_exception_handler(request, exception) # {"detail": ...} with the exception's status code (and headers, e.g. WWW-Authenticate)
 
 # Handle Validation Errors
 @app.exception_handler(RequestValidationError)
-def handle_validation_errors(request: Request, exception: RequestValidationError):
-    return JSONResponse(
-        content=exception.errors(),
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
-    )
+async def handle_validation_errors(request: Request, exception: RequestValidationError):
+    return await request_validation_exception_handler(request, exception) # 422 with {"detail": [errors]}

@@ -4,7 +4,8 @@ from typing import Annotated
 from fastapi import Depends, status, HTTPException, APIRouter
 # Database
 from database import get_db
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy import select
 import models
 
@@ -22,14 +23,15 @@ router = APIRouter()
     response_model=OrderResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def checkout_cart(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
+async def checkout_cart(user: CurrentUser, db: Annotated[AsyncSession, Depends(get_db)]):
 
     # if cart_items is empty, dont checkout
-    cart_items = db.execute(
+    result = await db.execute(
         select(models.CartItem)
         .options(selectinload(models.CartItem.product))
         .where(models.CartItem.user_id == user.user_id)
-    ).scalars().all()
+    )
+    cart_items = result.scalars().all()
 
     if not cart_items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cart is empty")
@@ -42,7 +44,7 @@ def checkout_cart(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
         total=total,
     )
     db.add(new_order)
-    db.flush()  # populate new_order.order_id for the order items below
+    await db.flush()  # populate new_order.order_id for the order items below
 
     # add order items to database, delete cart items from database
     for cart_item in cart_items:
@@ -53,10 +55,10 @@ def checkout_cart(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
             fixed_price=cart_item.product.price,
             quantity=cart_item.quantity,
         ))
-        db.delete(cart_item)
+        await db.delete(cart_item)
 
-    db.commit()
-    db.refresh(new_order, attribute_names=["items", "user"])
+    await db.commit()
+    await db.refresh(new_order, attribute_names=["items", "user"])
 
     return new_order
 
@@ -65,13 +67,14 @@ def checkout_cart(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
     "",
     response_model=list[OrderResponse],
 )
-def get_orders(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
+async def get_orders(user: CurrentUser, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    orders = db.execute(
+    result = await db.execute(
         select(models.Order)
         .options(selectinload(models.Order.items), selectinload(models.Order.user))
         .where(models.Order.user_id == user.user_id)
-    ).scalars().all()
+    )
+    orders = result.scalars().all()
 
     return orders
 
@@ -80,14 +83,15 @@ def get_orders(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
     "/{order_id}",
     response_model=OrderResponse,
 )
-def get_order(order_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
+async def get_order(order_id: int, user: CurrentUser, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    existing_order = db.execute(
+    result = await db.execute(
         select(models.Order)
         .options(selectinload(models.Order.items), selectinload(models.Order.user))
         .where(models.Order.order_id == order_id)
         .where(models.Order.user_id == user.user_id)
-    ).scalars().first()
+    )
+    existing_order = result.scalars().first()
 
     if not existing_order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")

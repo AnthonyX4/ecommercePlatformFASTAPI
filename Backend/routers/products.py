@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import Depends, status, HTTPException, APIRouter
 # Database
 from database import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import models
 
@@ -18,8 +18,8 @@ router = APIRouter()
     "",
     response_model=list[SneakerResponse]
 )
-def get_sneakers(db: Annotated[Session, Depends(get_db)]):
-    result = db.execute(select(models.Product))
+async def get_sneakers(db: Annotated[AsyncSession, Depends(get_db)]):
+    result = await db.execute(select(models.Product))
     sneakers = result.scalars().all()
     return sneakers
 
@@ -28,11 +28,12 @@ def get_sneakers(db: Annotated[Session, Depends(get_db)]):
     "/{product_id}",
     response_model=SneakerResponse
 )
-def get_sneaker(product_id: int, db: Annotated[Session, Depends(get_db)]):
+async def get_sneaker(product_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    existing_product = db.execute(
+    result = await db.execute(
         select(models.Product).where(models.Product.product_id == product_id)
-    ).scalars().first()
+    )
+    existing_product = result.scalars().first()
 
     if not existing_product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")

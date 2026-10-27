@@ -1,26 +1,38 @@
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR)) # so main/models/database are importable when pytest runs from anywhere
 
 import database
 
-# swap in an in-memory database BEFORE main is imported, main's create_all must never touch my_database.db
-# StaticPool keeps one shared connection, otherwise every new connection would get its own empty in-memory db
-test_engine = create_engine(
-    "sqlite://",
+# swap in a throwaway database BEFORE main is imported, main's lifespan create_all must never touch my_database.db
+# it's a temp file rather than in-memory so two engines can share it:
+#   - the app gets an async (aiosqlite) engine, same as production
+#   - fixtures get a plain sync engine, so tests can set up and inspect data without an event loop
+TEST_DB_DIR = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+TEST_DB_PATH = Path(TEST_DB_DIR.name) / "test.db"
+
+# NullPool opens a fresh connection per session, so no connection is reused across the event loops
+# TestClient and asyncio.run create (a pooled aiosqlite connection is tied to the loop that opened it)
+test_async_engine = create_async_engine(
+    f"sqlite+aiosqlite:///{TEST_DB_PATH}",
     connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
+    poolclass=NullPool,
 )
-database.engine = test_engine
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+database.engine = test_async_engine
+TestAsyncSession = async_sessionmaker(test_async_engine, class_=AsyncSession, expire_on_commit=False)
+
+test_sync_engine = create_engine(f"sqlite:///{TEST_DB_PATH}", poolclass=NullPool)
+TestSession = sessionmaker(autocommit=False, autoflush=False, bind=test_sync_engine)
 
 import main
 import models
@@ -28,18 +40,18 @@ import models
 PASSWORD = "password123"
 
 
-def get_test_db():
-    with TestSession() as db:
+async def get_test_db():
+    async with TestAsyncSession() as db:
         yield db
 
 
 @pytest.fixture
 def db():
     # fresh tables for every test so tests can't leak data into each other
-    database.Base.metadata.create_all(bind=test_engine)
+    database.Base.metadata.create_all(bind=test_sync_engine)
     with TestSession() as session:
         yield session
-    database.Base.metadata.drop_all(bind=test_engine)
+    database.Base.metadata.drop_all(bind=test_sync_engine)
 
 
 @pytest.fixture

@@ -4,7 +4,8 @@ from typing import Annotated
 from fastapi import Depends, status, HTTPException, APIRouter, Query
 # Database
 from database import get_db
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy import select
 import models
 
@@ -30,26 +31,33 @@ ALLOWED_TRANSITIONS = {
     "/users",
     response_model=list[AdminUserResponse],
 )
-def get_users(db: Annotated[Session, Depends(get_db)], include_deleted: bool = True):
+async def get_users(db: Annotated[AsyncSession, Depends(get_db)], include_deleted: bool = True):
 
     query = select(models.User).order_by(models.User.user_id)
     if not include_deleted:
         query = query.where(models.User.deleted_at.is_(None))
 
-    return db.execute(query).scalars().all()
+    result = await db.execute(query)
+    return result.scalars().all()
 
 # GET, Access a single user and all of their orders
 @router.get(
     "/users/{user_id}",
     response_model=AdminUserDetail,
 )
-def get_user(user_id: int, db: Annotated[Session, Depends(get_db)]):
+async def get_user(user_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    existing_user = db.execute(
+    result = await db.execute(
         select(models.User)
-        .options(selectinload(models.User.orders).selectinload(models.Order.items))
+        .options(
+            selectinload(models.User.orders).options( # each order in OrderResponse also needs its items and user
+                selectinload(models.Order.items),
+                selectinload(models.Order.user),
+            )
+        )
         .where(models.User.user_id == user_id)
-    ).scalars().first()
+    )
+    existing_user = result.scalars().first()
 
     if not existing_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -61,8 +69,8 @@ def get_user(user_id: int, db: Annotated[Session, Depends(get_db)]):
     "/orders",
     response_model=list[OrderResponse],
 )
-def get_orders(
-    db: Annotated[Session, Depends(get_db)],
+async def get_orders(
+    db: Annotated[AsyncSession, Depends(get_db)],
     status_filter: Annotated[OrderStatus | None, Query(alias="status")] = None, # still ?status= in the url, renamed so it doesn't shadow fastapi's status module
 ):
 
@@ -74,20 +82,22 @@ def get_orders(
     if status_filter is not None:
         query = query.where(models.Order.status == status_filter)
 
-    return db.execute(query).scalars().all()
+    result = await db.execute(query)
+    return result.scalars().all()
 
 # PATCH, Move an order to its next status
 @router.patch(
     "/orders/{order_id}/status",
     response_model=OrderResponse,
 )
-def update_order_status(order_id: int, update: OrderStatusUpdate, db: Annotated[Session, Depends(get_db)]):
+async def update_order_status(order_id: int, update: OrderStatusUpdate, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    existing_order = db.execute(
+    result = await db.execute(
         select(models.Order)
         .options(selectinload(models.Order.items), selectinload(models.Order.user))
         .where(models.Order.order_id == order_id)
-    ).scalars().first()
+    )
+    existing_order = result.scalars().first()
 
     if not existing_order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -100,7 +110,7 @@ def update_order_status(order_id: int, update: OrderStatusUpdate, db: Annotated[
         )
 
     existing_order.status = update.status
-    db.commit()
-    db.refresh(existing_order, attribute_names=["items", "user"])
+    await db.commit()
+    await db.refresh(existing_order, attribute_names=["items", "user"])
 
     return existing_order
