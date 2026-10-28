@@ -1,19 +1,21 @@
 from typing import Annotated
 
 # Fastapi
-from fastapi import Depends, status, HTTPException, APIRouter
+from fastapi import Depends, status, HTTPException, APIRouter, Query
 # Database
 from database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy import select
+from sqlalchemy import func, select
 import models
+
+from config import settings
 
 # Dependencies
 from auth import CurrentUser
 
 # Schemas
-from schemas import CartItemResponse, CartItemCreate, CartItemUpdate
+from schemas import CartItemResponse, CartItemCreate, CartItemUpdate, PaginatedCartItemsResponse
 
 router = APIRouter()
 
@@ -31,21 +33,44 @@ async def get_cart_item_or_404(cart_item_id: int, user: models.User, db: AsyncSe
 
     return existing_cart_item
 
-# GET, Access items in cart
+# GET, Access one page of items in cart, oldest added first
 @router.get(
     "",
-    response_model=list[CartItemResponse],
+    response_model=PaginatedCartItemsResponse,
 )
-async def get_cart_items(user: CurrentUser, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_cart_items(
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=settings.max_page_size)] = settings.items_per_page,
+):
+
+    count_result = await db.execute(
+        select(func.count())
+        .select_from(models.CartItem)
+        .where(models.CartItem.user_id == user.user_id) # count only this user's cart, same filter as the page query
+    )
+    total = count_result.scalar() or 0
 
     result = await db.execute(
         select(models.CartItem)
         .options(selectinload(models.CartItem.product))
         .where(models.CartItem.user_id == user.user_id)
+        .order_by(models.CartItem.cart_item_id) # offset needs a fixed order, otherwise pages can repeat or miss rows
+        .offset(skip)
+        .limit(limit)
     )
     cart_items = result.scalars().all()
 
-    return cart_items
+    has_more = skip + len(cart_items) < total
+
+    return PaginatedCartItemsResponse(
+        cart_items=[CartItemResponse.model_validate(cart_item) for cart_item in cart_items],
+        total=total,
+        skip=skip,
+        limit=limit,
+        has_more=has_more,
+    )
 
 # POST, Add item to cart
 @router.post(

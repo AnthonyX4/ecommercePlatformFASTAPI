@@ -16,7 +16,7 @@ function Home() {
         fetch("http://localhost:8000/api/products") // the port in which our api is running
         .then((data) => data.json()) 
         .then((data) => { // this is needed because .json() also returns a promise (async things)
-            const sneakers_data = data.Sneakers
+            const sneakers_data = data.products // the api returns one page: {products, total, skip, limit, has_more}
             setSneakers(sneakers_data)
             setLoading(false) // no longer loading, because the data arrived and has been stored properly.
         })

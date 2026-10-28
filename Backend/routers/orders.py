@@ -1,19 +1,21 @@
 from typing import Annotated
 
 # Fastapi
-from fastapi import Depends, status, HTTPException, APIRouter
+from fastapi import Depends, status, HTTPException, APIRouter, Query
 # Database
 from database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy import select
+from sqlalchemy import func, select
 import models
+
+from config import settings
 
 # Dependencies
 from auth import CurrentUser
 
 # Schemas
-from schemas import OrderResponse
+from schemas import OrderResponse, PaginatedOrdersResponse
 
 router = APIRouter()
 
@@ -62,21 +64,44 @@ async def checkout_cart(user: CurrentUser, db: Annotated[AsyncSession, Depends(g
 
     return new_order
 
-# GET, Access all of a user's orders
+# GET, Access one page of a user's orders, newest first
 @router.get(
     "",
-    response_model=list[OrderResponse],
+    response_model=PaginatedOrdersResponse,
 )
-async def get_orders(user: CurrentUser, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_orders(
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=settings.max_page_size)] = settings.items_per_page,
+):
+
+    count_result = await db.execute(
+        select(func.count())
+        .select_from(models.Order)
+        .where(models.Order.user_id == user.user_id)
+    )
+    total = count_result.scalar() or 0
 
     result = await db.execute(
         select(models.Order)
         .options(selectinload(models.Order.items), selectinload(models.Order.user))
         .where(models.Order.user_id == user.user_id)
+        .order_by(models.Order.created_date.desc(), models.Order.order_id.desc()) # order_id breaks ties between orders made in the same instant
+        .offset(skip)
+        .limit(limit)
     )
     orders = result.scalars().all()
 
-    return orders
+    has_more = skip + len(orders) < total
+
+    return PaginatedOrdersResponse(
+        orders=[OrderResponse.model_validate(order) for order in orders],
+        total=total,
+        skip=skip,
+        limit=limit,
+        has_more=has_more,
+    )
 
 # GET, Access a single order
 @router.get(

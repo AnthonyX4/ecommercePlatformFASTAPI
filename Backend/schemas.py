@@ -3,7 +3,17 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+# Pagination
+class PaginatedResponse(BaseModel):
+    # shared by every paginated list below, each subclass adds that page's items under its own key
+    total: int # matching rows across every page, not just this one
+    skip: int
+    limit: int
+    has_more: bool # true when another page exists after this one
+
 class SneakerResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True) # lets model_validate read a models.Product directly
+
     product_id: int
     name: str
     price: float
@@ -12,6 +22,9 @@ class SneakerResponse(BaseModel):
     link: str
     brand: str
     description: str
+
+class PaginatedProductsResponse(PaginatedResponse):
+    products: list[SneakerResponse]
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -49,11 +62,18 @@ class CartItemUpdate(BaseModel):
     quantity: int = Field(gt=0)
 
 class CartItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     cart_item_id: int
     quantity: int
     product: SneakerResponse
 
+class PaginatedCartItemsResponse(PaginatedResponse):
+    cart_items: list[CartItemResponse]
+
 class OrderItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     order_item_id: int
     product_id: int
     item_name: str
@@ -61,12 +81,17 @@ class OrderItemResponse(BaseModel):
     quantity: int
 
 class OrderResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     order_id: int
     status: str
     total: float # matches Order.total Numeric(10, 2), an int would reject totals with cents
     created_date: datetime
     items: list[OrderItemResponse]
     user: UserPublic
+
+class PaginatedOrdersResponse(PaginatedResponse):
+    orders: list[OrderResponse]
 
 # Admin
 class OrderStatus(StrEnum):
@@ -80,10 +105,15 @@ class OrderStatusUpdate(BaseModel):
     status: OrderStatus # anything else is rejected with a 422
 
 class AdminUserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     user_id: int
     email: EmailStr
     is_admin: bool
     deleted_at: datetime | None # set for soft-deleted users, see delete_user
+
+class PaginatedAdminUsersResponse(PaginatedResponse):
+    users: list[AdminUserResponse]
 
 class AdminUserDetail(AdminUserResponse):
     orders: list[OrderResponse]

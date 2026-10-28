@@ -30,7 +30,7 @@ def test_admin_routes_reject_missing_token(client, method, path):
 def test_list_users_shows_every_user(client, admin_headers, user_headers):
     response = client.get("/api/admin/users", headers=admin_headers)
     assert response.status_code == 200
-    users = response.json()
+    users = response.json()["users"]
     assert [u["email"] for u in users] == ["admin@example.com", "customer@example.com"]
     assert users[0]["is_admin"] is True
     assert users[1]["is_admin"] is False
@@ -42,12 +42,12 @@ def test_list_users_includes_soft_deleted_users_unless_filtered(client, admin_he
     me = client.get("/api/users/me", headers=user_headers).json()
     assert client.delete(f"/api/users/{me['user_id']}", headers=user_headers).status_code == 204
 
-    everyone = client.get("/api/admin/users", headers=admin_headers).json()
+    everyone = client.get("/api/admin/users", headers=admin_headers).json()["users"]
     deleted = next(u for u in everyone if u["user_id"] == me["user_id"])
     assert deleted["deleted_at"] is not None
     assert deleted["email"] == f"deleted-{me['user_id']}@invalid.example"
 
-    active = client.get("/api/admin/users", params={"include_deleted": False}, headers=admin_headers).json()
+    active = client.get("/api/admin/users", params={"include_deleted": False}, headers=admin_headers).json()["users"]
     assert me["user_id"] not in [u["user_id"] for u in active]
 
 
@@ -77,7 +77,7 @@ def test_list_orders_shows_every_users_orders(client, admin_headers, user_header
 
     response = client.get("/api/admin/orders", headers=admin_headers)
     assert response.status_code == 200
-    assert [o["order_id"] for o in response.json()] == [second["order_id"], first["order_id"]] # newest first
+    assert [o["order_id"] for o in response.json()["orders"]] == [second["order_id"], first["order_id"]] # newest first
 
 
 def test_list_orders_filters_by_status(client, admin_headers, user_headers, product):
@@ -86,7 +86,7 @@ def test_list_orders_filters_by_status(client, admin_headers, user_headers, prod
     client.patch(f"/api/admin/orders/{shipped['order_id']}/status", json={"status": "shipped"}, headers=admin_headers)
 
     response = client.get("/api/admin/orders", params={"status": "pending"}, headers=admin_headers)
-    assert [o["order_id"] for o in response.json()] == [pending["order_id"]]
+    assert [o["order_id"] for o in response.json()["orders"]] == [pending["order_id"]]
 
 
 def test_list_orders_unknown_status_filter_is_422(client, admin_headers):

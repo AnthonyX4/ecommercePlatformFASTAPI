@@ -1,11 +1,18 @@
 # Fastapi
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from typing import Annotated
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 
 # Database
-from database import engine, Base
+from database import engine, Base, get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from config import settings
+
+# Schemas
+from schemas import PaginatedProductsResponse
 
 # Cross Origin Resource Sharing (front and backend connection)
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,6 +54,17 @@ app.include_router(products.router, prefix="/api/products", tags=["products"])
 app.include_router(cart.router, prefix="/api/cart", tags=["cart"])
 app.include_router(orders.router, prefix="/api/orders", tags=["orders"])
 app.include_router(admins.router, prefix="/api/admin", tags=["admin"])
+
+# GET, Home page feed: the first page of products
+# the frontend loads the following pages from /api/products?skip=<products so far>&limit=<page size>
+@app.get(
+    "/",
+    response_model=PaginatedProductsResponse,
+    tags=["home"],
+)
+async def home(db: Annotated[AsyncSession, Depends(get_db)]):
+    # reuses the products handler so the home feed and /api/products can't drift apart
+    return await products.get_sneakers(db, skip=0, limit=settings.products_per_page)
 
 # Media files: GET /media/<path> returns the file at media/<path> (public, no auth)
 # "media" is relative to the directory the server is started from, so run it from Backend/

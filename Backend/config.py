@@ -13,5 +13,10 @@ class Settings(BaseSettings):
 
     max_upload_size_bytes: int = 5 * 1024 * 1024 # 5MB, profile picture uploads larger than this are rejected
 
+    # pagination: the page size used when a request doesn't pass ?limit=
+    products_per_page: int = 12 # divides evenly into a 2, 3 or 4 column sneaker grid
+    items_per_page: int = 10 # cart items, orders and the admin lists
+    max_page_size: int = 100 # the largest ?limit= a request may ask for
+
 
 settings = Settings()
