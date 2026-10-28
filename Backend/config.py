@@ -11,5 +11,7 @@ class Settings(BaseSettings):
     algorithm: str = "HS256" # default value
     access_token_expire_minutes: int = 30 # default value
 
+    max_upload_size_bytes: int = 5 * 1024 * 1024 # 5MB, profile picture uploads larger than this are rejected
+
 
 settings = Settings()

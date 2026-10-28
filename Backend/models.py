@@ -13,10 +13,18 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(200), nullable=False)
     is_admin: Mapped[bool] = mapped_column(default=False) # only set with harvest_scripts/make_admin.py, never through the api
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None) # set when a user with orders is "deleted", see delete_user
+    image_file: Mapped[str | None] = mapped_column(String(200), default=None) # filename in media/profile_pics/, None means the default picture
     orders: Mapped[list["Order"]] = relationship(back_populates="user") # intentionally no cascade: orders are records to keep, users with orders are soft-deleted
     cart_items: Mapped[list["CartItem"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+
+    @property
+    def image_path(self) -> str:
+        # url the frontend can use as an <img> src, both folders are mounted in main.py
+        if self.image_file:
+            return f"/media/profile_pics/{self.image_file}"
+        return "/static/profile_pics/default.jpg"
 
 
 class Product(Base):

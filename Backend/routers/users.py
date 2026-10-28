@@ -3,8 +3,13 @@ from typing import Annotated
 from datetime import datetime, UTC, timedelta
 
 # Fastapi
-from fastapi import Depends, status, HTTPException, APIRouter
+from fastapi import Depends, status, HTTPException, APIRouter, UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
+from starlette.concurrency import run_in_threadpool # runs a sync function in a worker thread so it doesn't block the event loop
+
+# Images
+from PIL import UnidentifiedImageError
+from image_utils import delete_profile_image, process_profile_image
 
 from database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,14 +188,81 @@ async def delete_user(user: OwnedUser, db: Annotated[AsyncSession, Depends(get_d
     )
     has_orders = result.first()
 
+    old_filename = user.image_file
+
     if has_orders:
         # scrub personal data, the row stays so Order.user_id still points at something
         user.email = f"deleted-{user.user_id}@invalid.example" # .example is reserved (RFC 2606) and, unlike .invalid, passes EmailStr
         user.password_hash = hash_password(secrets.token_urlsafe(32)) # destroy the old hash, leave a well-formed one nothing can match
+        user.image_file = None # the picture is personal data too
         user.deleted_at = datetime.now(UTC)
         await db.refresh(user, attribute_names=["cart_items"]) # load cart_items up front, async can't lazy load them on access
         user.cart_items.clear() # delete-orphan cascade removes the cart rows
     else:
         await db.delete(user) # awaited because the cascade may need to load cart_items before deleting them
     await db.commit()
+
+    # file is removed only after the commit succeeds, if the commit failed the user would still point at it
+    delete_profile_image(old_filename)
+
+
+# PATCH, upload/replace profile picture
+# multipart/form-data with the image in a field named "file", not json
+@router.patch(
+    "/{user_id}/picture",
+    response_model=UserPrivate,
+)
+async def upload_profile_picture(file: UploadFile, user: OwnedUser, db: Annotated[AsyncSession, Depends(get_db)]):
+
+    content = await file.read()
+
+    if len(content) > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size is {settings.max_upload_size_bytes // (1024 * 1024)}MB",
+        )
+
+    # image processing is CPU bound, so it runs in a thread instead of on the event loop
+    try:
+        new_filename = await run_in_threadpool(process_profile_image, content)
+    except UnidentifiedImageError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid image file. Please upload a valid image (JPEG, PNG, GIF, WebP).",
+        ) from err
+
+    old_filename = user.image_file
+
+    user.image_file = new_filename
+    await db.commit()
+    await db.refresh(user)
+
+    # old file is deleted after the commit, deleting first would leave the user pointing at a missing file if the commit failed
+    delete_profile_image(old_filename)
+
+    return user
+
+
+# DELETE, remove profile picture (falls back to the default one)
+@router.delete(
+    "/{user_id}/picture",
+    response_model=UserPrivate,
+)
+async def delete_profile_picture(user: OwnedUser, db: Annotated[AsyncSession, Depends(get_db)]):
+
+    old_filename = user.image_file
+
+    if old_filename is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No profile picture to delete",
+        )
+
+    user.image_file = None
+    await db.commit()
+    await db.refresh(user)
+
+    delete_profile_image(old_filename)
+
+    return user
 
