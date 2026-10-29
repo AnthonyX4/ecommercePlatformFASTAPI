@@ -19,5 +19,18 @@ class Settings(BaseSettings):
     items_per_page: int = 10 # cart items, orders and the admin lists
     max_page_size: int = 100 # the largest ?limit= a request may ask for
 
+    reset_token_expire_minutes: int = 60 # how long a password reset link works for
+
+    # email (smtp), the defaults are placeholders, the real values come from .env
+    mail_server: str = "localhost"
+    mail_port: int = 587
+    mail_username: str = ""
+    mail_password: SecretStr = SecretStr("")
+    mail_from: str = "noreply@example.com"
+    mail_use_tls: bool = True # upgrades the connection with STARTTLS, not implicit TLS (port 465)
+
+    # the react app, password reset emails link to <frontend_url>/reset-password?token=...
+    frontend_url: str = "http://localhost:5173"
+
 
 settings = Settings()

@@ -36,6 +36,7 @@ TestSession = sessionmaker(autocommit=False, autoflush=False, bind=test_sync_eng
 
 import main
 import models
+import email_utils
 
 PASSWORD = "password123"
 
@@ -52,6 +53,18 @@ def db():
     with TestSession() as session:
         yield session
     database.Base.metadata.drop_all(bind=test_sync_engine)
+
+
+@pytest.fixture(autouse=True)
+def outbox(monkeypatch):
+    # every email a test triggers is recorded here instead of sent, .env has real smtp credentials
+    sent = []
+
+    async def fake_send_email(to_email, subject, plain_text, html_content=None):
+        sent.append({"to_email": to_email, "subject": subject, "plain_text": plain_text, "html_content": html_content})
+
+    monkeypatch.setattr(email_utils, "send_email", fake_send_email)
+    return sent
 
 
 @pytest.fixture

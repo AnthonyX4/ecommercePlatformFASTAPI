@@ -52,6 +52,17 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+# Password reset
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    token: str # the token from the emailed link's ?token= query param
+    new_password: str = Field(min_length=8) # same rule as UserCreate.password
+
+class MessageResponse(BaseModel):
+    message: str
+
 class CartItemBase(BaseModel):
     product_id: int
 

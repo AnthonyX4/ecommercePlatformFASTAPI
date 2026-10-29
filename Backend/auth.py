@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 
 from typing import Annotated
@@ -29,6 +31,16 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
+
+# Password reset tokens
+def generate_reset_token() -> str:
+    # 32 random bytes from the os's cryptographic rng, url safe so it fits in ?token= without encoding
+    return secrets.token_urlsafe(32)
+
+def hash_reset_token(token: str) -> str:
+    # sha256 instead of argon2: the token is random, not guessable like a password, so a slow hash adds nothing,
+    # and unlike argon2 (salted) the same token always gives the same hash, so we can look the row up by it
+    return hashlib.sha256(token.encode()).hexdigest()
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Create a JWT access token."""

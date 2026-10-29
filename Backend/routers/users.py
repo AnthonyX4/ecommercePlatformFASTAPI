@@ -3,7 +3,7 @@ from typing import Annotated
 from datetime import datetime, UTC, timedelta
 
 # Fastapi
-from fastapi import Depends, status, HTTPException, APIRouter, UploadFile
+from fastapi import BackgroundTasks, Depends, status, HTTPException, APIRouter, UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette.concurrency import run_in_threadpool # runs a sync function in a worker thread so it doesn't block the event loop
 
@@ -14,14 +14,24 @@ from image_utils import delete_profile_image, process_profile_image
 from database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy import delete as sql_delete # bulk DELETE statement, aliased so it isn't confused with db.delete(obj)
 import models
 
 # Schemas
-from schemas import UserPublic, UserCreate, UserUpdate, UserPrivate, Token
+from schemas import (
+    UserPublic, UserCreate, UserUpdate, UserPrivate, Token,
+    ForgotPasswordRequest, ResetPasswordRequest, MessageResponse,
+)
 
 # Authentication
-from auth import create_access_token, hash_password, verify_password, CurrentUser
+from auth import (
+    create_access_token, hash_password, verify_password, CurrentUser,
+    generate_reset_token, hash_reset_token,
+)
 from config import settings
+
+# Email
+from email_utils import send_password_reset_email
 
 
 router = APIRouter()
@@ -100,6 +110,110 @@ async def login_for_access_token(
     )
     return Token(access_token=access_token, token_type="bearer")
 
+
+def invalid_reset_token() -> HTTPException:
+    """Same 400 for a missing, used, expired or orphaned token, so callers can't tell which check failed."""
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Invalid or expired reset token",
+    )
+
+# POST, request a password reset email
+# the response is the same whether or not the email has an account, so this can't be used to find out who's registered
+@router.post(
+    "/forgot-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_202_ACCEPTED, # accepted: the email is sent after the response, not before
+)
+async def forgot_password(
+    request_data: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    # soft-deleted users are excluded, their rows are anonymized and the account can't be recovered
+    result = await db.execute(
+        select(models.User).where(
+            func.lower(models.User.email) == request_data.email.lower(),
+            models.User.deleted_at.is_(None),
+        ),
+    )
+    user = result.scalars().first()
+
+    if user:
+        # only the newest link works, asking again invalidates any earlier one
+        await db.execute(
+            sql_delete(models.PasswordResetToken).where(
+                models.PasswordResetToken.user_id == user.user_id,
+            ),
+        )
+
+        token = generate_reset_token() # the raw token only ever goes in the email, the db gets its hash
+        reset_token = models.PasswordResetToken(
+            user_id=user.user_id,
+            token_hash=hash_reset_token(token),
+            expires_at=datetime.now(UTC) + timedelta(minutes=settings.reset_token_expire_minutes),
+        )
+        db.add(reset_token)
+        await db.commit()
+
+        # runs after the response is sent: the client doesn't wait on the smtp server,
+        # and a slow send can't give away that this email has an account
+        background_tasks.add_task(send_password_reset_email, to_email=user.email, token=token)
+
+    return MessageResponse(
+        message="If an account exists with this email, you will receive password reset instructions.",
+    )
+
+# POST, set a new password using the token from the emailed link
+@router.post(
+    "/reset-password",
+    response_model=MessageResponse,
+)
+async def reset_password(
+    request_data: ResetPasswordRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    # the db only has hashes, so hash what we were given and look that up
+    result = await db.execute(
+        select(models.PasswordResetToken).where(
+            models.PasswordResetToken.token_hash == hash_reset_token(request_data.token),
+        ),
+    )
+    reset_token = result.scalars().first()
+
+    if not reset_token:
+        raise invalid_reset_token()
+
+    # sqlite doesn't store the timezone, so expires_at comes back naive, it was saved in utc
+    if reset_token.expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
+        await db.delete(reset_token)
+        await db.commit()
+        raise invalid_reset_token()
+
+    result = await db.execute(
+        select(models.User)
+        .where(models.User.user_id == reset_token.user_id)
+        .where(models.User.deleted_at.is_(None)),
+    )
+    user = result.scalars().first()
+
+    if not user:
+        raise invalid_reset_token()
+
+    user.password_hash = hash_password(request_data.new_password)
+
+    # links are single use, this one and any other pending ones for the user are gone after a reset
+    await db.execute(
+        sql_delete(models.PasswordResetToken).where(
+            models.PasswordResetToken.user_id == user.user_id,
+        ),
+    )
+    await db.commit()
+
+    return MessageResponse(
+        message="Password reset successfully. You can now log in with your new password.",
+    )
+
 ## get_current_user
 # declared before /{user_id} so "me" is not parsed as a user id
 @router.get("/me", response_model=UserPrivate)
@@ -137,10 +251,11 @@ async def update_user(user_update: UserUpdate, user: OwnedUser, db: Annotated[As
 
     update_data = user_update.model_dump(exclude_unset=True, exclude_none=True) # converted into dictionary, explicit nulls are ignored instead of crashing on None.lower()
     current_password = update_data.pop("current_password", None)
+    changes_credentials = "password" in update_data or "email" in update_data
 
     # changing credentials requires proving you know the current password,
     # so a stolen token alone cannot lock the owner out of their account
-    if "password" in update_data or "email" in update_data:
+    if changes_credentials:
         if not current_password or not verify_password(current_password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -167,6 +282,14 @@ async def update_user(user_update: UserUpdate, user: OwnedUser, db: Annotated[As
             user.password_hash = hash_password(value)
         else:
             setattr(user, field, value)
+
+    # a pending reset link was issued for the old credentials (and maybe sent to the old email), so it stops working
+    if changes_credentials:
+        await db.execute(
+            sql_delete(models.PasswordResetToken).where(
+                models.PasswordResetToken.user_id == user.user_id,
+            ),
+        )
 
     await db.commit()
     await db.refresh(user)
@@ -196,10 +319,11 @@ async def delete_user(user: OwnedUser, db: Annotated[AsyncSession, Depends(get_d
         user.password_hash = hash_password(secrets.token_urlsafe(32)) # destroy the old hash, leave a well-formed one nothing can match
         user.image_file = None # the picture is personal data too
         user.deleted_at = datetime.now(UTC)
-        await db.refresh(user, attribute_names=["cart_items"]) # load cart_items up front, async can't lazy load them on access
+        await db.refresh(user, attribute_names=["cart_items", "reset_tokens"]) # load both up front, async can't lazy load them on access
         user.cart_items.clear() # delete-orphan cascade removes the cart rows
+        user.reset_tokens.clear() # and any pending reset links
     else:
-        await db.delete(user) # awaited because the cascade may need to load cart_items before deleting them
+        await db.delete(user) # awaited because the cascade may need to load cart_items/reset_tokens before deleting them
     await db.commit()
 
     # file is removed only after the commit succeeds, if the commit failed the user would still point at it
