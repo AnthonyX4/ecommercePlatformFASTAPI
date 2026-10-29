@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="ignore", # .env is shared with harvest_scripts (API_KEY, BASE_URL), so skip keys not declared here
     ) # automatically load the below values from our .env file
 
     secret_key: SecretStr # this type displays *** instead of actual value when printing or logging

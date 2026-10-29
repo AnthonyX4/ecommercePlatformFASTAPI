@@ -10,6 +10,8 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR)) # so database/models are importable regardless of cwd
 
+from sqlalchemy import select, func
+
 from database import AsyncSessionLocal, engine, Base # the stuff we need from the database
 from models import Product # the actual table we need to work with
 
@@ -23,16 +25,21 @@ async def seedDB (): # async only because the database engine is async now, it s
     print("Beginning the seeding, stand by... 🌱")
 
     async with AsyncSessionLocal() as db: # closes the session for us when the block ends
+        # running the seed twice would add every sneaker again, so only seed an empty table
+        existing = await db.scalar(select(func.count()).select_from(Product))
+        if existing:
+            print(f"Products table already has {existing} rows, skipping seed 🛑")
+            await engine.dispose()
+            return
+
         for sneaker in sneaker_data:
             product = Product(
                 name=sneaker.get("title"),
                 brand=sneaker.get("brand"),
-                price=sneaker.get("avg_price"),# sadly current_price isn't available, I think there is a way to get live pricing with KicksDB
-                                               # but that would require constant pinging of their API, and I don't get paid enough to pay for their
-                                               # premium API services (I am broke)
-                image_url=sneaker.get("image"),
-                gender=sneaker.get("gender"),
-                description=sneaker.get("description"),
+                price=float(sneaker.get("lowest_ask") or sneaker.get("avg_price") or 0), # lowest_ask is the current lowest StockX price (as of the harvest), the api sends prices as strings
+                image_url=sneaker.get("image_url"),
+                gender=sneaker.get("gender") or "unisex",
+                description=sneaker.get("description") or "", # some products have no description, the column can't be null
                 link=sneaker.get("link")
             )
             db.add(product)
