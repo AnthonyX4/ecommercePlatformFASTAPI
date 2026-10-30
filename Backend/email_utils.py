@@ -39,15 +39,15 @@ async def send_email(
     )
 
 
-async def send_password_reset_email(to_email: str, token: str) -> None:
+async def send_password_reset_email(to_email: str, username: str, token: str) -> None:
     # the link opens the react app's /reset-password page, which reads ?token= and posts it to /api/users/reset-password
     reset_url = f"{settings.frontend_url}/reset-password?token={token}"
     expire_minutes = settings.reset_token_expire_minutes
 
     template = templates.env.get_template("email/password_reset.html")
-    html_content = template.render(reset_url=reset_url, expire_minutes=expire_minutes)
+    html_content = template.render(username=username, reset_url=reset_url, expire_minutes=expire_minutes)
 
-    plain_text = f"""Hi,
+    plain_text = f"""Hi {username},
 
 You requested to reset your SNEAKRS. password. Open the link below to set a new password:
 

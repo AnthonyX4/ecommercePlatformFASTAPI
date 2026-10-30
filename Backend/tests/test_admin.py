@@ -46,6 +46,7 @@ def test_list_users_includes_soft_deleted_users_unless_filtered(client, admin_he
     deleted = next(u for u in everyone if u["user_id"] == me["user_id"])
     assert deleted["deleted_at"] is not None
     assert deleted["email"] == f"deleted-{me['user_id']}@invalid.example"
+    assert deleted["username"] == f"[deleted-{me['user_id']}]"
 
     active = client.get("/api/admin/users", params={"include_deleted": False}, headers=admin_headers).json()["users"]
     assert me["user_id"] not in [u["user_id"] for u in active]

@@ -124,12 +124,11 @@ def test_short_new_password_is_rejected(client, user_headers, outbox):
 
 
 def test_changing_password_kills_a_pending_link(client, user_headers, outbox):
-    user_id = me(client, user_headers)["user_id"]
     request_reset(client)
 
     response = client.patch(
-        f"/api/users/{user_id}",
-        json={"password": "changedpass789", "current_password": PASSWORD},
+        "/api/users/me/password",
+        json={"current_password": PASSWORD, "new_password": "changedpass789"},
         headers=user_headers,
     )
     assert response.status_code == 200

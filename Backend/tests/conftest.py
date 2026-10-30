@@ -86,9 +86,11 @@ def product(db):
     return shoe
 
 
-def register_and_login(client, email: str) -> dict:
+def register_and_login(client, email: str, username: str | None = None) -> dict:
     """Create a user through the API and return headers carrying their token."""
-    assert client.post("/api/users", json={"email": email, "password": PASSWORD}).status_code == 201
+    username = username or email.split("@")[0] # "customer@example.com" registers as "customer"
+    response = client.post("/api/users", json={"username": username, "email": email, "password": PASSWORD})
+    assert response.status_code == 201
     response = client.post("/api/users/token", data={"username": email, "password": PASSWORD})
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}

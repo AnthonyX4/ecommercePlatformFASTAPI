@@ -8,6 +8,7 @@ class User(Base):
     __tablename__ = "users"
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False) # stored as typed, uniqueness is checked case-insensitively in the routes
     email: Mapped[str] = mapped_column(String)
 
     password_hash: Mapped[str] = mapped_column(String(200), nullable=False)

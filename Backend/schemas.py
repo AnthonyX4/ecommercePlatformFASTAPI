@@ -26,9 +26,13 @@ class SneakerResponse(BaseModel):
 class PaginatedProductsResponse(PaginatedResponse):
     products: list[SneakerResponse]
 
+# letters, digits, _ and - only: usernames end up in frontend urls (/:username/cart),
+# and soft-deleted users get "[deleted-<id>]", which this pattern can never produce, so a real user can't take it first
+USERNAME_PATTERN = r"^[A-Za-z0-9_-]+$"
+
 class UserBase(BaseModel):
+    username: str = Field(min_length=1, max_length=50, pattern=USERNAME_PATTERN)
     email: EmailStr
-    # add username attribute
 
 class UserCreate(UserBase):
     password: str = Field(min_length=8)
@@ -37,6 +41,7 @@ class UserPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
+    username: str
     image_file: str | None
     image_path: str # read from the User.image_path property
 
@@ -44,9 +49,14 @@ class UserPrivate(UserPublic):
     email: EmailStr
 
 class UserUpdate(BaseModel):
+    # password isn't here, it's changed through PATCH /me/password (ChangePasswordRequest)
+    username: str | None = Field(default=None, min_length=1, max_length=50, pattern=USERNAME_PATTERN)
     email: EmailStr | None = Field(default=None)
-    password: str | None = Field(default=None, min_length=8)
-    current_password: str | None = Field(default=None) # required to change email or password
+    current_password: str | None = Field(default=None) # required to change email
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8) # same rule as UserCreate.password
 
 class Token(BaseModel):
     access_token: str
@@ -119,6 +129,7 @@ class AdminUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
+    username: str
     email: EmailStr
     is_admin: bool
     deleted_at: datetime | None # set for soft-deleted users, see delete_user

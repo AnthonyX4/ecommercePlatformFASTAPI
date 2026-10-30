@@ -20,7 +20,7 @@ import models
 # Schemas
 from schemas import (
     UserPublic, UserCreate, UserUpdate, UserPrivate, Token,
-    ForgotPasswordRequest, ResetPasswordRequest, MessageResponse,
+    ForgotPasswordRequest, ResetPasswordRequest, ChangePasswordRequest, MessageResponse,
 )
 
 # Authentication
@@ -48,6 +48,15 @@ async def get_owned_user(user_id: int, user: CurrentUser) -> models.User:
 
 OwnedUser = Annotated[models.User, Depends(get_owned_user)]
 
+
+# case-insensitive, so "Anthony" and "anthony" can't both exist, exclude_user_id lets a user keep their own name
+async def username_taken(db: AsyncSession, username: str, exclude_user_id: int | None = None) -> bool:
+    query = select(models.User.user_id).where(func.lower(models.User.username) == username.lower())
+    if exclude_user_id is not None:
+        query = query.where(models.User.user_id != exclude_user_id)
+    result = await db.execute(query.limit(1))
+    return result.first() is not None
+
 # POST, create user
 @router.post(
     "",
@@ -65,7 +74,11 @@ async def create_user(user: UserCreate, db: Annotated[AsyncSession, Depends(get_
     if existing_user:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
 
+    if await username_taken(db, user.username):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+
     new_user = models.User(
+        username=user.username,
         email=user.email.lower(),
         password_hash=hash_password(user.password)
     )
@@ -158,7 +171,7 @@ async def forgot_password(
 
         # runs after the response is sent: the client doesn't wait on the smtp server,
         # and a slow send can't give away that this email has an account
-        background_tasks.add_task(send_password_reset_email, to_email=user.email, token=token)
+        background_tasks.add_task(send_password_reset_email, to_email=user.email, username=user.username, token=token)
 
     return MessageResponse(
         message="If an account exists with this email, you will receive password reset instructions.",
@@ -221,6 +234,36 @@ async def read_current_user(user: CurrentUser):
     """Get the currently authenticated user."""
     return user
 
+# PATCH, change the logged in user's password
+# also declared before /{user_id}, the path is /me/password so there's no id to match
+@router.patch(
+    "/me/password",
+    response_model=MessageResponse,
+)
+async def change_password(
+    request_data: ChangePasswordRequest,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    # proving you know the current password means a stolen token alone can't lock the owner out
+    if not verify_password(request_data.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    user.password_hash = hash_password(request_data.new_password)
+
+    # a pending reset link was issued for the old password, so it stops working
+    await db.execute(
+        sql_delete(models.PasswordResetToken).where(
+            models.PasswordResetToken.user_id == user.user_id,
+        ),
+    )
+    await db.commit()
+
+    return MessageResponse(message="Password changed successfully.")
+
 # GET, get user
 @router.get(
     "/{user_id}",
@@ -251,11 +294,11 @@ async def update_user(user_update: UserUpdate, user: OwnedUser, db: Annotated[As
 
     update_data = user_update.model_dump(exclude_unset=True, exclude_none=True) # converted into dictionary, explicit nulls are ignored instead of crashing on None.lower()
     current_password = update_data.pop("current_password", None)
-    changes_credentials = "password" in update_data or "email" in update_data
+    changes_email = "email" in update_data
 
-    # changing credentials requires proving you know the current password,
+    # changing the email requires proving you know the current password,
     # so a stolen token alone cannot lock the owner out of their account
-    if changes_credentials:
+    if changes_email:
         if not current_password or not verify_password(current_password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -263,7 +306,7 @@ async def update_user(user_update: UserUpdate, user: OwnedUser, db: Annotated[As
             )
 
     # if email is changing, make sure no other user already has it
-    if "email" in update_data:
+    if changes_email:
         result = await db.execute(
             select(models.User).where(
                 func.lower(models.User.email) == update_data["email"].lower(),
@@ -275,16 +318,19 @@ async def update_user(user_update: UserUpdate, user: OwnedUser, db: Annotated[As
         if email_taken:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already in use")
 
+    # a username isn't a credential, so changing it doesn't need current_password
+    if "username" in update_data:
+        if await username_taken(db, update_data["username"], exclude_user_id=user.user_id):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+
     for field, value in update_data.items():
         if field == "email":
             user.email = value.lower()
-        elif field == "password":
-            user.password_hash = hash_password(value)
         else:
             setattr(user, field, value)
 
-    # a pending reset link was issued for the old credentials (and maybe sent to the old email), so it stops working
-    if changes_credentials:
+    # a pending reset link may have been sent to the old email, so it stops working
+    if changes_email:
         await db.execute(
             sql_delete(models.PasswordResetToken).where(
                 models.PasswordResetToken.user_id == user.user_id,
@@ -315,6 +361,7 @@ async def delete_user(user: OwnedUser, db: Annotated[AsyncSession, Depends(get_d
 
     if has_orders:
         # scrub personal data, the row stays so Order.user_id still points at something
+        user.username = f"[deleted-{user.user_id}]" # brackets fail USERNAME_PATTERN, so no real user can already have it
         user.email = f"deleted-{user.user_id}@invalid.example" # .example is reserved (RFC 2606) and, unlike .invalid, passes EmailStr
         user.password_hash = hash_password(secrets.token_urlsafe(32)) # destroy the old hash, leave a well-formed one nothing can match
         user.image_file = None # the picture is personal data too
